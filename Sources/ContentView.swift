@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     @StateObject private var viewModel = TodoViewModel()
@@ -272,7 +273,7 @@ struct ExpandedView: View {
             Divider()
             
             // 待办列表
-            ScrollView {
+            UnifiedScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     if showingAllTodos {
                         ForEach(viewModel.allTodos, id: \.date) { dailyTodos in
@@ -349,6 +350,7 @@ struct ExpandedView: View {
                         .padding(.vertical, 32)
                     }
                 }
+                .padding(.top, 8)
             }
             
             // 添加待办输入框（仅在今日模式下显示）
@@ -393,8 +395,8 @@ struct ExpandedView: View {
         .background(
             RoundedRectangle(cornerRadius: 16)
                 .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.3), radius: 16, x: 0, y: 8)
         )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
         .task {
             await viewModel.initialize()
         }
@@ -448,6 +450,133 @@ struct ExpandedView: View {
     }
 }
 
+// 自定义ScrollView以统一滚动条样式
+struct UnifiedScrollView<Content: View>: NSViewRepresentable {
+    let content: Content
+    
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+    
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        
+        // 强制使用现代滚动条样式
+        scrollView.scrollerStyle = .overlay
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.backgroundColor = .clear
+        scrollView.drawsBackground = false
+        
+        // 设置滚动视图的边界和行为
+        scrollView.borderType = .noBorder
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        
+        let hostingView = NSHostingView(rootView: content)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        
+        let clipView = NSClipView()
+        clipView.backgroundColor = .clear
+        clipView.drawsBackground = false
+        clipView.documentView = hostingView
+        scrollView.contentView = clipView
+        
+        // 设置NSHostingView背景透明
+        DispatchQueue.main.async {
+            if let hostingView = clipView.documentView as? NSHostingView<Content> {
+                hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+            }
+        }
+        
+        // 设置约束以确保内容填满可用空间
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: clipView.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: clipView.topAnchor),
+            hostingView.widthAnchor.constraint(equalTo: clipView.widthAnchor)
+        ])
+        
+        return scrollView
+    }
+    
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        let clipView = nsView.contentView
+        if let hostingView = clipView.documentView as? NSHostingView<Content> {
+            hostingView.rootView = content
+            // 确保背景保持透明
+            hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        }
+    }
+}
+
+// 自定义TextField用于检测退格键和ESC键
+struct BackspaceDetectingTextField: NSViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+    var onBackspaceWhenEmpty: () -> Void
+    var onEscapePressed: () -> Void
+    var onEnterPressed: () -> Void
+    var onFocusLost: () -> Void
+    
+    func makeNSView(context: Context) -> NSTextField {
+        let textField = NSTextField()
+        textField.delegate = context.coordinator
+        textField.placeholderString = placeholder
+        textField.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        textField.isBordered = false
+        textField.backgroundColor = .clear
+        textField.focusRingType = .none
+        return textField
+    }
+    
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        nsView.stringValue = text
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: BackspaceDetectingTextField
+        
+        init(_ parent: BackspaceDetectingTextField) {
+            self.parent = parent
+        }
+        
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSStandardKeyBindingResponding.deleteBackward(_:)) {
+                if parent.text.isEmpty {
+                    parent.onBackspaceWhenEmpty()
+                    return true
+                }
+            } else if commandSelector == #selector(NSStandardKeyBindingResponding.cancelOperation(_:)) {
+                // ESC键处理
+                parent.onEscapePressed()
+                return true
+            } else if commandSelector == #selector(NSStandardKeyBindingResponding.insertNewline(_:)) {
+                // 回车键处理
+                parent.onEnterPressed()
+                return true
+            }
+            return false
+        }
+        
+        func controlTextDidEndEditing(_ obj: Notification) {
+            // 失焦时保存
+            parent.onFocusLost()
+        }
+        
+        func controlTextDidChange(_ obj: Notification) {
+            if let textField = obj.object as? NSTextField {
+                parent.text = textField.stringValue
+            }
+        }
+    }
+}
+
 struct TodoRowView: View {
     let todo: Todo
     let isReadOnly: Bool
@@ -457,7 +586,6 @@ struct TodoRowView: View {
     
     @State private var isEditing = false
     @State private var editedContent = ""
-    @State private var previousContent = ""
     
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -474,28 +602,26 @@ struct TodoRowView: View {
             .disabled(isReadOnly)
             
             if isEditing && !isReadOnly {
-                TextField("编辑待办事项", text: $editedContent)
-                    .textFieldStyle(.plain)
-                    .font(.body)
-                    .onSubmit {
+                BackspaceDetectingTextField(
+                    text: $editedContent,
+                    placeholder: "编辑待办事项",
+                    onBackspaceWhenEmpty: {
+                        onDelete?(todo.id)
+                    },
+                    onEscapePressed: {
+                        cancelEdit()
+                    },
+                    onEnterPressed: {
+                        saveEdit()
+                    },
+                    onFocusLost: {
                         saveEdit()
                     }
-                    .onAppear {
-                        editedContent = todo.content
-                        previousContent = todo.content
-                    }
-                    .onChange(of: editedContent) { newValue in
-                        // 检测退格键删除：如果从有内容变为空内容，并且是通过删除操作
-                        if newValue.isEmpty && !previousContent.isEmpty {
-                            // 延迟检查，给用户机会输入新内容
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                if editedContent.isEmpty {
-                                    onDelete?(todo.id)
-                                }
-                            }
-                        }
-                        previousContent = newValue
-                    }
+                )
+                .font(.body)
+                .onAppear {
+                    editedContent = todo.content
+                }
             } else {
                 Text(todo.content)
                     .font(.body)
@@ -521,7 +647,6 @@ struct TodoRowView: View {
     private func startEditing() {
         isEditing = true
         editedContent = todo.content
-        previousContent = todo.content
     }
     
     private func saveEdit() {
@@ -533,6 +658,12 @@ struct TodoRowView: View {
             // 如果内容有变化，保存编辑
             onEdit?(todo.id, trimmedContent)
         }
+        isEditing = false
+    }
+    
+    private func cancelEdit() {
+        // 恢复原始内容
+        editedContent = todo.content
         isEditing = false
     }
 }

@@ -73,6 +73,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 创建SwiftUI内容
         let contentView = ContentView(windowController: WindowController(window: window))
         hostingView = NSHostingView(rootView: contentView)
+        hostingView.layer?.cornerRadius = 16
+        hostingView.layer?.masksToBounds = true
         window.contentView = hostingView
         
         // 显示窗口并使其成为关键窗口

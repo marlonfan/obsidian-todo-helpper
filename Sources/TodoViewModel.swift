@@ -81,12 +81,21 @@ class TodoViewModel: ObservableObject {
     private let fileManager = FileManager.default
     private let parser = ObsidianParser.shared
     private var fileMonitor: DispatchSourceFileSystemObject?
+    private var lastUpdateDate: Date?
+    private var dateCheckTimer: Timer?
+    
+    deinit {
+        dateCheckTimer?.invalidate()
+        fileMonitor?.cancel()
+    }
     
     // 初始化
     func initialize() async {
         await getVaultPath()
         await loadTodayTodos()
         setupFileMonitoring()
+        setupDateCheckTimer()
+        lastUpdateDate = Date()
     }
     
     // 获取仓库路径
@@ -351,6 +360,39 @@ class TodoViewModel: ObservableObject {
         fileMonitor?.resume()
     }
     
+    // 设置日期检查定时器
+    private func setupDateCheckTimer() {
+        dateCheckTimer?.invalidate()
+        dateCheckTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            Task { @MainActor [weak self] in
+                await self?.checkDateChange()
+            }
+        }
+    }
+    
+    // 检查日期是否变化
+    private func checkDateChange() async {
+        let calendar = Calendar.current
+        let now = Date()
+        
+        guard let lastDate = lastUpdateDate else {
+            lastUpdateDate = now
+            return
+        }
+        
+        // 检查日期是否不同
+        if !calendar.isDate(now, inSameDayAs: lastDate) {
+            print("检测到日期变化，重新加载数据")
+            lastUpdateDate = now
+            await loadTodayTodos()
+            // 如果all todos已经加载过，也重新加载
+            if !allTodos.isEmpty {
+                await loadAllTodos()
+            }
+        }
+    }
+    
     // 编辑待办内容
     func editTodo(index: Int, newContent: String) async {
         guard let filePath = getTodayFilePath(),
@@ -528,9 +570,5 @@ class TodoViewModel: ObservableObject {
         } catch {
             print("更新历史待办状态失败: \(error)")
         }
-    }
-    
-    deinit {
-        fileMonitor?.cancel()
     }
 }

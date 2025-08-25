@@ -97,9 +97,8 @@ class ObsidianParser {
                     let newLine = "- [\(status)] \(todo.content)"
                     resultLines.append(newLine)
                     todoIndex += 1
-                } else {
-                    resultLines.append(line)
                 }
+                // 如果updatedTodos数量少于原始todo，则跳过这一行（即删除这个todo）
             } else {
                 resultLines.append(line)
             }
