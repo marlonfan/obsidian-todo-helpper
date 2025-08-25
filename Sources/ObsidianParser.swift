@@ -160,7 +160,7 @@ class ObsidianParser {
     }
     
     // 从模板创建今日文件内容
-    func createTodayFromTemplate(_ templateContent: String) -> String {
+    func createTodayFromTemplate(_ templateContent: String, todoSectionHeader: String = "### 重点事项") -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let today = formatter.string(from: Date())
@@ -171,7 +171,7 @@ class ObsidianParser {
         
         // 如果模板为空，创建基本结构
         if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            content = "\(today)\n\n### 重点事项\n\n"
+            content = "\(today)\n\n\(todoSectionHeader)\n\n"
         }
         
         return content

@@ -1,12 +1,30 @@
 import Foundation
+import SwiftUI
 
 // 应用配置管理
 class AppConfig: ObservableObject {
     @Published var vaultPath: String = ""
     @Published var templatePath: String = ""
     @Published var todoSectionHeader: String = "### 重点事项"
+    @Published var clockColor: String = "black"
     
     private let fileManager = FileManager.default
+    
+    // 预设的护眼颜色选项
+    static let eyeFriendlyColors: [(name: String, value: String, color: Color)] = [
+        ("经典黑色", "black", .black),
+        ("深灰色", "darkGray", Color(NSColor.darkGray)),
+        ("海军蓝", "navyBlue", Color(red: 0.0, green: 0.2, blue: 0.4)),
+        ("深绿色", "darkGreen", Color(red: 0.0, green: 0.4, blue: 0.2)),
+        ("深棕色", "darkBrown", Color(red: 0.4, green: 0.2, blue: 0.1)),
+        ("紫罗兰", "violet", Color(red: 0.3, green: 0.1, blue: 0.5)),
+        ("深青色", "teal", Color(red: 0.0, green: 0.5, blue: 0.5)),
+        ("深红色", "deepRed", Color(red: 0.5, green: 0.0, blue: 0.1)),
+        ("深粉色", "deepPink", Color(red: 0.5, green: 0.2, blue: 0.4)),
+        ("橙棕色", "orangeBrown", Color(red: 0.6, green: 0.3, blue: 0.1)),
+        ("深橄榄", "deepOlive", Color(red: 0.3, green: 0.4, blue: 0.2)),
+        ("深紫色", "deepPurple", Color(red: 0.2, green: 0.1, blue: 0.4))
+    ]
     
     private var configDirectory: String {
         guard let homeDirectory = fileManager.homeDirectoryForCurrentUser.path as String? else {
@@ -23,12 +41,14 @@ class AppConfig: ObservableObject {
         vaultPath = getSavedString(for: "vault_path.txt") ?? ""
         templatePath = getSavedString(for: "template_path.txt") ?? ""
         todoSectionHeader = getSavedString(for: "todo_header.txt") ?? "### 重点事项"
+        clockColor = getSavedString(for: "clock_color.txt") ?? "black"
     }
     
     func saveConfig() {
         saveString(vaultPath, to: "vault_path.txt")
         saveString(templatePath, to: "template_path.txt")
         saveString(todoSectionHeader, to: "todo_header.txt")
+        saveString(clockColor, to: "clock_color.txt")
     }
     
     private func getSavedString(for fileName: String) -> String? {
@@ -172,7 +192,7 @@ class TodoViewModel: ObservableObject {
         }
         
         // 创建今日文件内容
-        let todayContent = parser.createTodayFromTemplate(templateContent)
+        let todayContent = parser.createTodayFromTemplate(templateContent, todoSectionHeader: config.todoSectionHeader)
         
         do {
             // 确保目录存在
@@ -196,47 +216,38 @@ class TodoViewModel: ObservableObject {
         
         var dailyTodos: [DailyTodos] = []
         let calendar = Calendar.current
-        let thirtyDaysAgo = calendar.date(byAdding: .day, value: -30, to: Date()) ?? Date()
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"
         
-        do {
-            let files = try fileManager.contentsOfDirectory(atPath: vaultPath)
-            
-            for file in files {
-                if file.hasSuffix(".md") && isDailyNoteFile(file) {
-                    let dateString = String(file.dropLast(3)) // 移除.md扩展名
-                    
-                    // 检查日期是否在近30天内
-                    if let fileDate = dateFormatter.date(from: dateString),
-                       fileDate >= thirtyDaysAgo {
-                        let filePath = "\(vaultPath)/\(file)"
-                        let content = try String(contentsOfFile: filePath, encoding: .utf8)
-                        let todos = parser.parseTodos(from: content, sectionHeader: config.todoSectionHeader)
-                        
-                        if !todos.isEmpty {
-                            dailyTodos.append(DailyTodos(date: dateString, todos: todos))
-                        }
-                    }
-                }
+        // 生成过去30天的日期列表，而不是扫描目录
+        for i in 0..<30 {
+            guard let date = calendar.date(byAdding: .day, value: -i, to: Date()) else {
+                continue
             }
             
-            // 按日期排序（最新的在前）
-            dailyTodos.sort { $0.date > $1.date }
-            allTodos = dailyTodos
+            let dateString = dateFormatter.string(from: date)
+            let filePath = "\(vaultPath)/\(dateString).md"
             
-        } catch {
-            print("加载所有待办失败: \(error)")
-            allTodos = []
+            // 检查文件是否存在
+            guard fileManager.fileExists(atPath: filePath) else {
+                continue
+            }
+            
+            do {
+                let content = try String(contentsOfFile: filePath, encoding: .utf8)
+                let todos = parser.parseTodos(from: content, sectionHeader: config.todoSectionHeader)
+                
+                if !todos.isEmpty {
+                    dailyTodos.append(DailyTodos(date: dateString, todos: todos))
+                }
+            } catch {
+                print("加载文件失败 \(filePath): \(error)")
+                continue
+            }
         }
-    }
-    
-    // 检查是否为日记文件
-    private func isDailyNoteFile(_ fileName: String) -> Bool {
-        let nameWithoutExt = String(fileName.dropLast(3))
-        return nameWithoutExt.count == 10 && 
-               nameWithoutExt.filter({ $0 == "-" }).count == 2 &&
-               nameWithoutExt.allSatisfy({ $0.isNumber || $0 == "-" })
+        
+        // dailyTodos已经按日期排序（最新的在前）
+        allTodos = dailyTodos
     }
     
     // 切换待办状态
@@ -340,7 +351,150 @@ class TodoViewModel: ObservableObject {
         fileMonitor?.resume()
     }
     
-    // 切换历史待办状态
+    // 编辑待办内容
+    func editTodo(index: Int, newContent: String) async {
+        guard let filePath = getTodayFilePath(),
+              fileManager.fileExists(atPath: filePath),
+              index < todayTodos.count else {
+            return
+        }
+        
+        let trimmedContent = newContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedContent.isEmpty else {
+            return
+        }
+        
+        // 更新本地数据
+        todayTodos[index] = Todo(
+            id: todayTodos[index].id,
+            content: trimmedContent,
+            completed: todayTodos[index].completed
+        )
+        
+        // 更新文件
+        do {
+            let originalContent = try String(contentsOfFile: filePath, encoding: .utf8)
+            let updatedContent = parser.reconstructContent(originalContent, with: todayTodos, sectionHeader: config.todoSectionHeader)
+            try updatedContent.write(toFile: filePath, atomically: true, encoding: .utf8)
+        } catch {
+            print("编辑待办失败: \(error)")
+            // 恢复原状态
+            await loadTodayTodos()
+        }
+    }
+    
+    // 删除待办
+    func deleteTodo(index: Int) async {
+        guard let filePath = getTodayFilePath(),
+              fileManager.fileExists(atPath: filePath),
+              index < todayTodos.count else {
+            return
+        }
+        
+        // 更新本地数据
+        todayTodos.remove(at: index)
+        
+        // 重新编号todos
+        for i in 0..<todayTodos.count {
+            todayTodos[i] = Todo(
+                id: i,
+                content: todayTodos[i].content,
+                completed: todayTodos[i].completed
+            )
+        }
+        
+        // 更新文件
+        do {
+            let originalContent = try String(contentsOfFile: filePath, encoding: .utf8)
+            let updatedContent = parser.reconstructContent(originalContent, with: todayTodos, sectionHeader: config.todoSectionHeader)
+            try updatedContent.write(toFile: filePath, atomically: true, encoding: .utf8)
+        } catch {
+            print("删除待办失败: \(error)")
+            // 恢复原状态
+            await loadTodayTodos()
+        }
+    }
+    
+    // 编辑历史待办
+    func editHistoricalTodo(date: String, todoIndex: Int, newContent: String) async {
+        let filePath = "\(vaultPath)/\(date).md"
+        
+        guard fileManager.fileExists(atPath: filePath) else {
+            return
+        }
+        
+        let trimmedContent = newContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedContent.isEmpty else {
+            return
+        }
+        
+        do {
+            let originalContent = try String(contentsOfFile: filePath, encoding: .utf8)
+            let todos = parser.parseTodos(from: originalContent, sectionHeader: config.todoSectionHeader)
+            
+            guard todoIndex < todos.count else {
+                return
+            }
+            
+            // 更新todo列表
+            var updatedTodos = todos
+            updatedTodos[todoIndex] = Todo(
+                id: todos[todoIndex].id,
+                content: trimmedContent,
+                completed: todos[todoIndex].completed
+            )
+            
+            // 重构文件内容
+            let updatedContent = parser.reconstructContent(originalContent, with: updatedTodos, sectionHeader: config.todoSectionHeader)
+            try updatedContent.write(toFile: filePath, atomically: true, encoding: .utf8)
+            
+            // 重新加载全部待办以反映更改
+            await loadAllTodos()
+            
+        } catch {
+            print("编辑历史待办失败: \(error)")
+        }
+    }
+    
+    // 删除历史待办
+    func deleteHistoricalTodo(date: String, todoIndex: Int) async {
+        let filePath = "\(vaultPath)/\(date).md"
+        
+        guard fileManager.fileExists(atPath: filePath) else {
+            return
+        }
+        
+        do {
+            let originalContent = try String(contentsOfFile: filePath, encoding: .utf8)
+            var todos = parser.parseTodos(from: originalContent, sectionHeader: config.todoSectionHeader)
+            
+            guard todoIndex < todos.count else {
+                return
+            }
+            
+            // 删除指定todo
+            todos.remove(at: todoIndex)
+            
+            // 重新编号todos
+            for i in 0..<todos.count {
+                todos[i] = Todo(
+                    id: i,
+                    content: todos[i].content,
+                    completed: todos[i].completed
+                )
+            }
+            
+            // 重构文件内容
+            let updatedContent = parser.reconstructContent(originalContent, with: todos, sectionHeader: config.todoSectionHeader)
+            try updatedContent.write(toFile: filePath, atomically: true, encoding: .utf8)
+            
+            // 重新加载全部待办以反映更改
+            await loadAllTodos()
+            
+        } catch {
+            print("删除历史待办失败: \(error)")
+        }
+    }
     func toggleHistoricalTodo(date: String, todoIndex: Int, completed: Bool) async {
         let filePath = "\(vaultPath)/\(date).md"
         

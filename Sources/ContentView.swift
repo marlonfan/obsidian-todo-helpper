@@ -15,7 +15,7 @@ struct ContentView: View {
                         handleHover(hovering: hovering)
                     }
             } else {
-                CompactView { hovering in
+                CompactView(appConfig: viewModel.config) { hovering in
                     handleHover(hovering: hovering)
                 }
                 .frame(width: 180, height: 120)
@@ -62,14 +62,19 @@ struct ContentView: View {
 struct CompactView: View {
     @State private var currentTime = Date()
     @State private var isTimeTextHovered = false
+    @ObservedObject var appConfig: AppConfig
     let onHover: (Bool) -> Void
+    
+    private var clockColor: Color {
+        return AppConfig.eyeFriendlyColors.first { $0.value == appConfig.clockColor }?.color ?? .black
+    }
     
     var body: some View {
         VStack {
             Text(formatTime(currentTime))
                 .font(.system(.title2, design: .monospaced))
                 .fontWeight(.semibold)
-                .foregroundColor(.black)
+                .foregroundColor(clockColor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(Color.clear)
@@ -280,10 +285,20 @@ struct ExpandedView: View {
                                 ForEach(Array(dailyTodos.todos.enumerated()), id: \.offset) { index, todo in
                                     TodoRowView(
                                         todo: todo,
-                                        isReadOnly: false, // 允许编辑历史todo
+                                        isReadOnly: false,
                                         onToggle: { _, completed in
                                             Task {
                                                 await viewModel.toggleHistoricalTodo(date: dailyTodos.date, todoIndex: index, completed: completed)
+                                            }
+                                        },
+                                        onEdit: { _, newContent in
+                                            Task {
+                                                await viewModel.editHistoricalTodo(date: dailyTodos.date, todoIndex: index, newContent: newContent)
+                                            }
+                                        },
+                                        onDelete: { _ in
+                                            Task {
+                                                await viewModel.deleteHistoricalTodo(date: dailyTodos.date, todoIndex: index)
                                             }
                                         }
                                     )
@@ -299,6 +314,16 @@ struct ExpandedView: View {
                                 onToggle: { index, completed in
                                     Task {
                                         await viewModel.toggleTodo(index: index, completed: completed)
+                                    }
+                                },
+                                onEdit: { index, newContent in
+                                    Task {
+                                        await viewModel.editTodo(index: index, newContent: newContent)
+                                    }
+                                },
+                                onDelete: { index in
+                                    Task {
+                                        await viewModel.deleteTodo(index: index)
                                     }
                                 }
                             )
@@ -354,14 +379,12 @@ struct ExpandedView: View {
                             )
                     )
                     
-                    // 快捷提示
-                    if newTodoText.isEmpty {
-                        HStack {
-                            Text("💡 直接输入内容，按回车即可添加")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                        }
+                    // 快捷提示 - 始终显示
+                    HStack {
+                        Text("💡 直接输入内容，按回车即可添加")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Spacer()
                     }
                 }
             }
@@ -429,6 +452,12 @@ struct TodoRowView: View {
     let todo: Todo
     let isReadOnly: Bool
     let onToggle: (Int, Bool) -> Void
+    let onEdit: ((Int, String) -> Void)?
+    let onDelete: ((Int) -> Void)?
+    
+    @State private var isEditing = false
+    @State private var editedContent = ""
+    @State private var previousContent = ""
     
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -444,13 +473,42 @@ struct TodoRowView: View {
             .buttonStyle(PlainButtonStyle())
             .disabled(isReadOnly)
             
-            Text(todo.content)
-                .font(.body)
-                .strikethrough(todo.completed)
-                .foregroundColor(todo.completed ? .secondary : .primary)
-                .multilineTextAlignment(.leading)
-            
-            Spacer()
+            if isEditing && !isReadOnly {
+                TextField("编辑待办事项", text: $editedContent)
+                    .textFieldStyle(.plain)
+                    .font(.body)
+                    .onSubmit {
+                        saveEdit()
+                    }
+                    .onAppear {
+                        editedContent = todo.content
+                        previousContent = todo.content
+                    }
+                    .onChange(of: editedContent) { newValue in
+                        // 检测退格键删除：如果从有内容变为空内容，并且是通过删除操作
+                        if newValue.isEmpty && !previousContent.isEmpty {
+                            // 延迟检查，给用户机会输入新内容
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                if editedContent.isEmpty {
+                                    onDelete?(todo.id)
+                                }
+                            }
+                        }
+                        previousContent = newValue
+                    }
+            } else {
+                Text(todo.content)
+                    .font(.body)
+                    .strikethrough(todo.completed)
+                    .foregroundColor(todo.completed ? .secondary : .primary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onTapGesture(count: 2) {
+                        if !isReadOnly && onEdit != nil {
+                            startEditing()
+                        }
+                    }
+            }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
@@ -459,6 +517,24 @@ struct TodoRowView: View {
                 .fill(todo.completed ? Color.green.opacity(0.1) : Color.clear)
         )
     }
+    
+    private func startEditing() {
+        isEditing = true
+        editedContent = todo.content
+        previousContent = todo.content
+    }
+    
+    private func saveEdit() {
+        let trimmedContent = editedContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedContent.isEmpty {
+            // 如果编辑后内容为空，删除todo
+            onDelete?(todo.id)
+        } else if trimmedContent != todo.content {
+            // 如果内容有变化，保存编辑
+            onEdit?(todo.id, trimmedContent)
+        }
+        isEditing = false
+    }
 }
 
 struct SettingsView: View {
@@ -466,6 +542,7 @@ struct SettingsView: View {
     @Binding var isShowing: Bool
     @State private var tempTodoHeader: String = ""
     @State private var tempTemplatePath: String = ""
+    @State private var tempClockColor: String = ""
     
     var body: some View {
         VStack(spacing: 16) {
@@ -484,6 +561,40 @@ struct SettingsView: View {
             }
             
             VStack(spacing: 12) {
+                // 时钟颜色设置
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "clock")
+                            .foregroundColor(.orange)
+                            .font(.title3)
+                        Text("时钟字体颜色")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                    }
+                    
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 8) {
+                        ForEach(AppConfig.eyeFriendlyColors, id: \.value) { colorOption in
+                            Button {
+                                tempClockColor = colorOption.value
+                            } label: {
+                                VStack(spacing: 4) {
+                                    Circle()
+                                        .fill(colorOption.color)
+                                        .frame(width: 24, height: 24)
+                                        .overlay(
+                                            Circle()
+                                                .stroke(tempClockColor == colorOption.value ? Color.blue : Color.clear, lineWidth: 2)
+                                        )
+                                    Text(colorOption.name)
+                                        .font(.caption2)
+                                        .foregroundColor(.primary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                
                 // 待办事项标识设置
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -545,6 +656,7 @@ struct SettingsView: View {
                 Button("重置") {
                     tempTodoHeader = "### 重点事项"
                     tempTemplatePath = ""
+                    tempClockColor = "black"
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -570,6 +682,7 @@ struct SettingsView: View {
         .onAppear {
             tempTodoHeader = viewModel.config.todoSectionHeader
             tempTemplatePath = viewModel.config.templatePath
+            tempClockColor = viewModel.config.clockColor
         }
     }
     
@@ -584,6 +697,9 @@ struct SettingsView: View {
         if panel.runModal() == .OK {
             if let url = panel.url {
                 tempTemplatePath = url.path
+                // 选择文件后自动保存到配置
+                viewModel.config.templatePath = tempTemplatePath
+                viewModel.config.saveConfig()
             }
         }
     }
@@ -591,6 +707,7 @@ struct SettingsView: View {
     private func saveSettings() {
         viewModel.config.todoSectionHeader = tempTodoHeader.isEmpty ? "### 重点事项" : tempTodoHeader
         viewModel.config.templatePath = tempTemplatePath
+        viewModel.config.clockColor = tempClockColor.isEmpty ? "black" : tempClockColor
         viewModel.config.saveConfig()
         
         // 重新加载数据以应用新设置
