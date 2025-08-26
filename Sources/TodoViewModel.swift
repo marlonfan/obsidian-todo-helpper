@@ -7,6 +7,7 @@ class AppConfig: ObservableObject {
     @Published var templatePath: String = ""
     @Published var todoSectionHeader: String = "### 重点事项"
     @Published var clockColor: String = "black"
+    @Published var autoLaunchEnabled: Bool = false
     
     private let fileManager = FileManager.default
     
@@ -35,6 +36,11 @@ class AppConfig: ObservableObject {
     
     init() {
         loadConfig()
+        // 同步自动启动状态
+        let actualStatus = checkAutoLaunchStatus()
+        if autoLaunchEnabled != actualStatus {
+            autoLaunchEnabled = actualStatus
+        }
     }
     
     func loadConfig() {
@@ -42,6 +48,7 @@ class AppConfig: ObservableObject {
         templatePath = getSavedString(for: "template_path.txt") ?? ""
         todoSectionHeader = getSavedString(for: "todo_header.txt") ?? "### 重点事项"
         clockColor = getSavedString(for: "clock_color.txt") ?? "black"
+        autoLaunchEnabled = getSavedBool(for: "auto_launch.txt") ?? false
     }
     
     func saveConfig() {
@@ -49,11 +56,17 @@ class AppConfig: ObservableObject {
         saveString(templatePath, to: "template_path.txt")
         saveString(todoSectionHeader, to: "todo_header.txt")
         saveString(clockColor, to: "clock_color.txt")
+        saveBool(autoLaunchEnabled, to: "auto_launch.txt")
     }
     
     private func getSavedString(for fileName: String) -> String? {
         let configFile = "\(configDirectory)/\(fileName)"
         return try? String(contentsOfFile: configFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    private func getSavedBool(for fileName: String) -> Bool? {
+        guard let stringValue = getSavedString(for: fileName) else { return nil }
+        return stringValue.lowercased() == "true"
     }
     
     private func saveString(_ value: String, to fileName: String) {
@@ -65,6 +78,88 @@ class AppConfig: ObservableObject {
         } catch {
             print("保存配置失败 \(fileName): \(error)")
         }
+    }
+    
+    private func saveBool(_ value: Bool, to fileName: String) {
+        saveString(value ? "true" : "false", to: fileName)
+    }
+    
+    // 设置开机自动启动
+    func setAutoLaunch(_ enabled: Bool) {
+        autoLaunchEnabled = enabled
+        saveConfig()
+        
+        if enabled {
+            enableAutoLaunch()
+        } else {
+            disableAutoLaunch()
+        }
+    }
+    
+    // 启用开机自动启动
+    private func enableAutoLaunch() {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier,
+              let executablePath = Bundle.main.executablePath else {
+            print("无法获取应用信息")
+            return
+        }
+        
+        let launchAgentPath = "\(NSHomeDirectory())/Library/LaunchAgents/\(bundleIdentifier).plist"
+        
+        let plistContent = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>\(bundleIdentifier)</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>\(executablePath)</string>
+            </array>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>KeepAlive</key>
+            <false/>
+        </dict>
+        </plist>
+        """
+        
+        do {
+            try plistContent.write(toFile: launchAgentPath, atomically: true, encoding: .utf8)
+            print("已启用开机自动启动")
+        } catch {
+            print("启用开机自动启动失败: \(error)")
+        }
+    }
+    
+    // 禁用开机自动启动
+    private func disableAutoLaunch() {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
+            print("无法获取Bundle Identifier")
+            return
+        }
+        
+        let launchAgentPath = "\(NSHomeDirectory())/Library/LaunchAgents/\(bundleIdentifier).plist"
+        
+        do {
+            if fileManager.fileExists(atPath: launchAgentPath) {
+                try fileManager.removeItem(atPath: launchAgentPath)
+                print("已禁用开机自动启动")
+            }
+        } catch {
+            print("禁用开机自动启动失败: \(error)")
+        }
+    }
+    
+    // 检查当前自动启动状态
+    func checkAutoLaunchStatus() -> Bool {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
+            return false
+        }
+        
+        let launchAgentPath = "\(NSHomeDirectory())/Library/LaunchAgents/\(bundleIdentifier).plist"
+        return fileManager.fileExists(atPath: launchAgentPath)
     }
 }
 

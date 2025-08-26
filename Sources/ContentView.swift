@@ -36,8 +36,8 @@ struct ContentView: View {
                 expandWindow()
             }
         } else {
-            // 鼠标离开，延迟收起以避免快速移动时的闪烁
-            hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
+            // 鼠标离开，减少延迟提高响应速度
+            hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { _ in
                 if isExpanded {
                     compactWindow()
                 }
@@ -46,17 +46,25 @@ struct ContentView: View {
     }
     
     private func expandWindow() {
-        withAnimation(.easeInOut(duration: 0.3)) {
+        // 首先快速调整窗口大小，减少视觉延迟
+        windowController.resizeWindow(width: 480, height: 560, animated: false)
+        
+        // 然后执行SwiftUI动画，专注于内容转换
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8, blendDuration: 0)) {
             isExpanded = true
         }
-        windowController.resizeWindow(width: 480, height: 560)
     }
     
     private func compactWindow() {
-        withAnimation(.easeInOut(duration: 0.3)) {
+        // 先执行SwiftUI内容动画
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.9, blendDuration: 0)) {
             isExpanded = false
         }
-        windowController.resizeWindow(width: 180, height: 120)
+        
+        // 延迟窗口收缩，让内容先消失
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            windowController.resizeWindow(width: 180, height: 120, animated: true)
+        }
     }
 }
 
@@ -782,12 +790,35 @@ struct SettingsView: View {
                 }
             }
             
+            // 开机自动启动设置
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "power")
+                        .foregroundColor(.purple)
+                        .font(.title3)
+                    Text("开机自动启动")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                }
+                
+                Toggle("启用开机自动启动", isOn: $viewModel.config.autoLaunchEnabled)
+                    .toggleStyle(SwitchToggleStyle())
+                    .onChange(of: viewModel.config.autoLaunchEnabled) { newValue in
+                        viewModel.config.setAutoLaunch(newValue)
+                    }
+                
+                Text("• 开启后应用将在系统启动时自动运行\n• 可随时在此处关闭自动启动功能")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            
             // 保存按钮
             HStack {
                 Button("重置") {
                     tempTodoHeader = "### 重点事项"
                     tempTemplatePath = ""
                     tempClockColor = "black"
+                    viewModel.config.setAutoLaunch(false)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)

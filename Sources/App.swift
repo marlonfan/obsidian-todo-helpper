@@ -38,6 +38,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var hostingView: NSHostingView<ContentView>!
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 检查是否已经有实例在运行
+        if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "").count > 1 {
+            // 如果已有实例运行，激活现有实例并退出当前实例
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "") {
+                if app != NSRunningApplication.current {
+                    app.activate()
+                    break
+                }
+            }
+            NSApp.terminate(nil)
+            return
+        }
         // 隐藏默认创建的窗口
         for window in NSApp.windows {
             window.close()
