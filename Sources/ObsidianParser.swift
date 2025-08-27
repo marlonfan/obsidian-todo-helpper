@@ -113,14 +113,22 @@ class ObsidianParser {
         return trimmedLine.range(of: #"^- \[([ x])\] .+"#, options: .regularExpression) != nil
     }
     
+    // 检查是否为不完整的待办行（如 "- " 或 "- []"）
+    private func isIncompleteTodoLine(_ line: String) -> Bool {
+        let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedLine == "-" || trimmedLine == "- " || trimmedLine == "- []" || trimmedLine == "- [ ]"
+    }
+    
     // 添加新待办到内容中
     func addTodoToContent(_ content: String, newTodo: String, sectionHeader: String = "### 重点事项") -> String {
         let lines = content.components(separatedBy: .newlines)
         var resultLines: [String] = []
         var foundImportantSection = false
         var inImportantSection = false
+        var insertIndex = -1
+        var replaceIncompleteIndex = -1
         
-        for line in lines {
+        for (_, line) in lines.enumerated() {
             if line.hasPrefix(sectionHeader) {
                 foundImportantSection = true
                 inImportantSection = true
@@ -128,26 +136,58 @@ class ObsidianParser {
                 continue
             }
             
+            // 检查是否离开重点事项章节
             if line.hasPrefix("### ") && !line.hasPrefix(sectionHeader) {
                 if inImportantSection {
-                    // 在指定部分结束之前添加新待办
-                    resultLines.append("- [ ] \(newTodo)")
-                    inImportantSection = false
+                    // 找到插入位置：在该章节结束处
+                    insertIndex = resultLines.count
                 }
-                resultLines.append(line)
-                continue
+                inImportantSection = false
+            }
+            
+            // 如果在重点事项章节中
+            if inImportantSection {
+                // 检查是否为不完整的待办行，如果是则标记替换位置
+                if isIncompleteTodoLine(line) && replaceIncompleteIndex == -1 {
+                    replaceIncompleteIndex = resultLines.count
+                    resultLines.append("- [ ] \(newTodo)") // 直接替换不完整的行
+                    continue
+                }
+                // 如果遇到完整的todo行，先添加这一行，然后更新插入位置
+                else if isTodoLine(line) {
+                    resultLines.append(line)
+                    insertIndex = resultLines.count // 在当前todo之后
+                    continue
+                }
             }
             
             resultLines.append(line)
         }
         
-        // 如果仍在指定部分（文件结束），添加新待办
-        if inImportantSection {
-            resultLines.append("- [ ] \(newTodo)")
+        // 如果找到了不完整的待办行并已替换，直接返回结果
+        if replaceIncompleteIndex >= 0 {
+            return resultLines.joined(separator: "\n")
         }
         
-        // 如果没有找到指定部分，创建一个
-        if !foundImportantSection {
+        // 如果仍在重点事项章节（文件结束）
+        if inImportantSection {
+            insertIndex = resultLines.count
+        }
+        
+        // 插入新todo
+        if insertIndex >= 0 {
+            resultLines.insert("- [ ] \(newTodo)", at: insertIndex)
+        } else if foundImportantSection {
+            // 如果找到了章节但没有合适的插入位置（空章节）
+            // 在章节标题后直接插入
+            for (index, line) in resultLines.enumerated() {
+                if line.hasPrefix(sectionHeader) {
+                    resultLines.insert("- [ ] \(newTodo)", at: index + 1)
+                    break
+                }
+            }
+        } else {
+            // 如果没有找到重点事项章节，创建一个
             if !content.isEmpty {
                 resultLines.append("")
             }
